@@ -15,3 +15,42 @@ materials used
 2)esp32 cam module for camera and detection functionm
 3) CVZone library for hand detection in esp 32 combined with Laser Detection on Screen (Red Pixel Tracking) for improved accuaracy
 4) 4x4 keypad for password enter
+
+Here's how we can divide the responsibilities between the Arduino and the ESP32:
+
+Arduino Responsibilities
+PIN Verification and System Activation:
+
+Read input from the 4x4 Keypad.
+Unlock the solenoid lock if the correct PIN is entered.
+Activate the system by turning on LEDs and allowing other operations.
+Mode Management:
+
+Manage mode switching between:
+Laser Painting Mode (predefined servo patterns).
+Hand Detection Mode (servo positions controlled by ESP32).
+Indicate the active mode with LEDs.
+Servo Control:
+
+In Laser Painting Mode:
+Move the servo motors in pre-programmed patterns.
+In Hand Detection Mode:
+Adjust servo positions based on coordinates received from the ESP32.
+Communication with ESP32:
+
+Receive hand position data via Serial or I2C in Hand Detection Mode.
+ESP32 Responsibilities
+Hand Detection:
+
+Use the ESP32-CAM to process the video feed and detect hands using the CVZone or Mediapipe library.
+Calculate the coordinates (x, y) of the detected hand relative to the screen.
+Data Transmission:
+
+Send the calculated hand coordinates to the Arduino via Serial or I2C.
+Feedback on Laser Position (Optional):
+
+Detect the red laser dot in the video feed and provide feedback to ensure it is aligned with the target.
+Communication Flow
+The Arduino activates the system when the correct PIN is entered.
+The ESP32 continuously tracks the hand and sends its position to the Arduino in Hand Detection Mode.
+The Arduino processes these coordinates to adjust the servos accordingly.
