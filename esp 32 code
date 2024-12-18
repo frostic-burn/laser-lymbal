@@ -1,1 +1,76 @@
+# ESP32-CAM Code for Hand Detection, Data Transmission, and Laser Feedback
+
+# Import necessary libraries
+import cv2
+from cvzone.HandTrackingModule import HandDetector
+import serial
+import time
+
+# Initialize serial communication with Arduino
+arduino = serial.Serial('/dev/ttyUSB0', 9600)  # Adjust the port as needed
+
+# Initialize video capture for ESP32-CAM
+cap = cv2.VideoCapture(0)  # 0 is the default camera
+
+# Initialize the hand detector
+hand_detector = HandDetector(detectionCon=0.8, maxHands=1)  # Adjust detection confidence as needed
+
+# Define color thresholds for red laser detection (in HSV)
+lower_red = (0, 120, 70)   # Adjust these values based on your laser color
+upper_red = (10, 255, 255) # Adjust these values based on your laser color
+
+# Main loop
+while True:
+    success, img = cap.read()  # Read frame from the camera
+    if not success:
+        print("Failed to read from ESP32-CAM")
+        continue
+
+    # Flip the image horizontally (if necessary)
+    img = cv2.flip(img, 1)
+
+    # Detect hands
+    hands, img = hand_detector.findHands(img)  # Find hands in the frame
+
+    if hands:
+        # Extract hand coordinates
+        hand = hands[0]  # Use the first detected hand
+        cx, cy = hand["center"]  # Center of the hand
+
+        # Send hand coordinates to Arduino via Serial
+        data = f"HAND:{cx},{cy}\n"
+        arduino.write(data.encode())
+
+    # Detect red laser dot
+    hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV color space
+    mask = cv2.inRange(hsv_img, lower_red, upper_red)  # Create mask for red color
+
+    # Find contours for the red laser dot
+    contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # Find the largest contour (assume it's the laser dot)
+        largest_contour = max(contours, key=cv2.contourArea)
+        (x, y), radius = cv2.minEnclosingCircle(largest_contour)
+
+        if radius > 2:  # Ignore small dots (noise)
+            cx_laser, cy_laser = int(x), int(y)
+
+            # Draw the laser dot on the frame
+            cv2.circle(img, (cx_laser, cy_laser), int(radius), (0, 255, 0), 2)
+
+            # Send laser dot coordinates to Arduino via Serial
+            data = f"LASER:{cx_laser},{cy_laser}\n"
+            arduino.write(data.encode())
+
+    # Display the video feed
+    cv2.imshow("ESP32-CAM", img)
+
+    # Break the loop on 'q' key press
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Cleanup
+cap.release()
+cv2.destroyAllWindows()
+arduino.close()
 
