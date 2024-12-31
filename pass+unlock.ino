@@ -4,10 +4,10 @@
 const byte ROWS = 4;
 const byte COLS = 4;
 const char KEYS[ROWS][COLS] = {
-  {'1', '2', '3', 'A'},
-  {'4', '5', '6', 'B'},
-  {'7', '8', '9', 'C'},
-  {'*', '0', '#', 'D'}
+  {'D', 'C', 'B', 'A'},  // Corrected row mapping
+  {'#', '9', '6', '3'},  // Corrected row mapping for 4 -> #
+  {'0', '8', '5', '2'},  // Corrected row mapping for 7 -> 5, 0 -> 7
+  {'*', '7', '4', '1'}   // Corrected row mapping for # -> 4, 0 -> 7
 };
 
 // Arduino pins for keypad rows and columns
