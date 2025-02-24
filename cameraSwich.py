@@ -1,6 +1,7 @@
-import cv2
+mport cv2
 import serial
 import time
+import numpy as np
 from cvzone.HandTrackingModule import HandDetector
 
 # Initialize hand detector
@@ -9,12 +10,12 @@ detector = HandDetector(detectionCon=0.7, maxHands=1)
 # Setup serial communication
 try:
     transmitter = serial.Serial('COM14', 115200)
-    time.sleep(2)
-    serial_connected = True
-    print("Serial connection established successfully")
-except:
-    serial_connected = False
-    print("Failed to connect to serial port. Running in simulation mode.")
+    time.sleep(2)  # Allow time for serial connection to establish
+    print("Serial connection established on COM14")
+except serial.SerialException:
+    print("Error: Could not open serial port COM14")
+    print("Please check your connection and port number")
+    transmitter = None
 
 def map_range(x, in_min, in_max, out_min, out_max):
     """Maps a value from one range to another."""
@@ -22,7 +23,7 @@ def map_range(x, in_min, in_max, out_min, out_max):
 
 def send_servo_command(pan_or_tilt, angle):
     """Sends a command to the servo motor to adjust its position."""
-    if not serial_connected:
+    if transmitter is None or not transmitter.is_open:
         return False
     
     servo_num = 1 if pan_or_tilt == 'pan' else 2
@@ -47,6 +48,40 @@ def get_available_cameras():
     
     return indices
 
+def create_button(img, text, position, size, is_selected=False):
+    """Create a button on the image."""
+    x, y = position
+    w, h = size
+    
+    # Button colors
+    if is_selected:
+        bg_color = (0, 170, 0)  # Green for selected camera
+        text_color = (255, 255, 255)  # White text
+    else:
+        bg_color = (70, 70, 70)  # Dark gray for unselected
+        text_color = (255, 255, 255)  # White text
+    
+    # Draw button background
+    cv2.rectangle(img, (x, y), (x + w, y + h), bg_color, -1)
+    
+    # Draw button border
+    cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 0), 2)
+    
+    # Add text
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 0.5, 2)[0]
+    text_x = x + (w - text_size[0]) // 2
+    text_y = y + (h + text_size[1]) // 2
+    cv2.putText(img, text, (text_x, text_y), font, 0.5, text_color, 2)
+    
+    return (x, y, w, h)  # Return button coordinates for hit testing
+
+def is_point_in_rect(point, rect):
+    """Check if a point is inside a rectangle."""
+    x, y = point
+    rect_x, rect_y, rect_w, rect_h = rect
+    return rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h
+
 def track_hand():
     """Tracks the hand and adjusts the servo angles based on its position."""
     # Get available cameras
@@ -58,14 +93,12 @@ def track_hand():
     print(f"Available camera indices: {available_cameras}")
     
     # Start with first available camera
-    camera_idx = 0
-    current_camera = available_cameras[camera_idx]
+    current_camera_idx = 0
     
-    print(f"Using camera index: {current_camera}")
-    cap = cv2.VideoCapture(current_camera, cv2.CAP_DSHOW)
-    
+    # Open the selected camera
+    cap = cv2.VideoCapture(available_cameras[current_camera_idx], cv2.CAP_DSHOW)
     if not cap.isOpened():
-        print(f"Failed to open camera at index {current_camera}.")
+        print(f"Failed to open camera at index {available_cameras[current_camera_idx]}.")
         return
     
     # Get camera frame dimensions
@@ -76,15 +109,33 @@ def track_hand():
     # Initialize servo angles
     pan_angle = 90
     tilt_angle = 90
+    last_sent_pan = 90
+    last_sent_tilt = 90
     
     # Exponential smoothing factor
     alpha = 0.2  # Lower values for smoother motion, adjust between 0.1 and 0.5
     
-    mode = "SIMULATION MODE" if not serial_connected else "CONNECTED TO SERVOS"
-    color = (0, 0, 255) if not serial_connected else (0, 255, 0)
+    # Control rate limiting
+    last_send_time = time.time()
+    min_send_interval = 0.05  # 50ms minimum between commands
     
-    print("\nPress 'c' to switch between cameras")
-    print("Press 'q' to quit")
+    # Mouse events
+    mouse_x, mouse_y = 0, 0
+    clicked = False
+    
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal mouse_x, mouse_y, clicked
+        mouse_x, mouse_y = x, y
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicked = True
+    
+    # Create a named window and set mouse callback
+    window_name = 'Hand Tracker'
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, mouse_callback)
+    
+    # Store button coordinates for hit testing
+    camera_buttons = []
     
     while True:
         ret, frame = cap.read()
@@ -92,30 +143,45 @@ def track_hand():
             print("Failed to capture frame")
             break
         
-        hands, img = detector.findHands(frame, flipType=False)
+        # Make a copy of the frame for drawing UI elements
+        img = frame.copy()
         
-        if hands:
+        # Detect hands
+        hands, img = detector.findHands(img, flipType=False)
+        
+        current_time = time.time()
+        send_allowed = current_time - last_send_time >= min_send_interval
+        
+        if hands and send_allowed:
             lmList = hands[0]['lmList']
             x, y = lmList[9][:2]  # Use the index finger base as reference
             
             # Calculate target angles based on hand position
             target_pan = map_range(x, 
-                                frame_width * 0.1, frame_width * 0.9,  # Input range
-                                160, 20)  # Output range (reversed for natural movement)
+                                 frame_width * 0.1, frame_width * 0.9,  # Input range
+                                 160, 20)  # Output range (reversed for natural movement)
             target_tilt = map_range(y,
-                                frame_height * 0.1, frame_height * 0.9,  # Input range
-                                20, 160)  # Output range (reversed for natural movement)
+                                  frame_height * 0.1, frame_height * 0.9,  # Input range
+                                  20, 160)  # Output range (reversed for natural movement)
             
             # Apply exponential smoothing
             pan_angle = alpha * target_pan + (1 - alpha) * pan_angle
             tilt_angle = alpha * target_tilt + (1 - alpha) * tilt_angle
             
-            # Send commands only if the change exceeds 1 degree and serial is connected
-            if serial_connected:
-                if abs(target_pan - pan_angle) > 1:
-                    send_servo_command('pan', int(pan_angle))
-                if abs(target_tilt - tilt_angle) > 1:
-                    send_servo_command('tilt', int(tilt_angle))
+            # Send commands only if the change exceeds 1 degree
+            commands_sent = False
+            if abs(pan_angle - last_sent_pan) > 1:
+                if send_servo_command('pan', int(pan_angle)):
+                    last_sent_pan = pan_angle
+                    commands_sent = True
+            
+            if abs(tilt_angle - last_sent_tilt) > 1:
+                if send_servo_command('tilt', int(tilt_angle)):
+                    last_sent_tilt = tilt_angle
+                    commands_sent = True
+            
+            if commands_sent:
+                last_send_time = current_time
             
             # Visualization
             cv2.circle(img, (int(x), int(y)), 10, (0, 255, 0), -1)
@@ -138,42 +204,69 @@ def track_hand():
             cv2.line(img, (pos_x - 5, pos_y), (pos_x + 5, pos_y), (0, 0, 255), 2)
             cv2.line(img, (pos_x, pos_y - 5), (pos_x, pos_y + 5), (0, 0, 255), 2)
         
-        # Add camera info and mode indicator
-        cv2.putText(img, f"Camera: {current_camera} | Press 'c' to switch", 
-                  (10, frame_height - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-        cv2.putText(img, mode, (10, frame_height - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        # Create camera selection buttons
+        button_y = 10
+        button_width = 120
+        button_height = 40
+        button_spacing = 10
+        camera_buttons = []
         
-        cv2.imshow('Hand Tracker', img)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('c') and len(available_cameras) > 1:
-            # Switch to next camera
-            cap.release()
-            camera_idx = (camera_idx + 1) % len(available_cameras)
-            current_camera = available_cameras[camera_idx]
-            print(f"Switching to camera index: {current_camera}")
+        for i, cam_idx in enumerate(available_cameras):
+            button_x = button_spacing + i * (button_width + button_spacing)
+            button_text = f"Camera {cam_idx}"
+            is_selected = (cam_idx == available_cameras[current_camera_idx])
             
-            cap = cv2.VideoCapture(current_camera, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                print(f"Failed to open camera at index {current_camera}. Trying next...")
-                continue
-                
-            # Get new camera dimensions
-            _, frame = cap.read()
-            if frame is not None:
-                frame_height, frame_width = frame.shape[:2]
-                print(f"New camera dimensions: {frame_width}x{frame_height}")
+            button_rect = create_button(img, button_text, (button_x, button_y), 
+                                      (button_width, button_height), is_selected)
+            camera_buttons.append((button_rect, cam_idx))
+        
+        # Display connection status
+        status_color = (0, 255, 0) if transmitter and transmitter.is_open else (0, 0, 255)
+        status_text = "Connected to ESP" if transmitter and transmitter.is_open else "Disconnected"
+        cv2.putText(img, status_text, (10, frame_height - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+        
+        # Show current camera info
+        cv2.putText(img, f"Using camera: {available_cameras[current_camera_idx]}", 
+                    (10, frame_height - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        
+        # Handle button clicks
+        if clicked:
+            for button_rect, cam_idx in camera_buttons:
+                if is_point_in_rect((mouse_x, mouse_y), button_rect):
+                    if cam_idx != available_cameras[current_camera_idx]:
+                        print(f"Switching to camera {cam_idx}")
+                        cap.release()
+                        current_camera_idx = available_cameras.index(cam_idx)
+                        cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+                        
+                        if not cap.isOpened():
+                            print(f"Failed to open camera {cam_idx}")
+                            # Try to reopen the previous camera
+                            current_camera_idx = 0
+                            cap = cv2.VideoCapture(available_cameras[current_camera_idx], cv2.CAP_DSHOW)
+                        else:
+                            # Get new camera dimensions
+                            _, frame = cap.read()
+                            if frame is not None:
+                                frame_height, frame_width = frame.shape[:2]
+                                print(f"New camera dimensions: {frame_width}x{frame_height}")
+                    break
+            clicked = False
+        
+        cv2.imshow(window_name, img)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
     
+    # Clean up
+    if transmitter and transmitter.is_open:
+        transmitter.close()
     cap.release()
     cv2.destroyAllWindows()
-    
-    # Close serial connection if it was open
-    if serial_connected:
-        transmitter.close()
-        print("Serial connection closed")
+
+if __name__ == "__main__":
+    track_hand()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     track_hand()
